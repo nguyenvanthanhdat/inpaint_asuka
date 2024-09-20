@@ -1,0 +1,13 @@
+-e git+https://github.com/huggingface/diffusers@main#egg=diffusers
+-e git+https://github.com/pytheralab/ObjMask.git@train/0.1#egg=ObjMask
+accelerate
+datasets
+transformers
+scipy
+wandb
+bitsandbytes
+Cython
+onnxruntime-gpu
+onnx
+torchvision
+xformers
