@@ -54,10 +54,11 @@ from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_ava
 from diffusers.utils.torch_utils import is_compiled_module
 
 from objmask.mae.mae_module import CustomMae
-from objmask.align.align_module import AlignModelTextEncoder_1, AlignModelTextEncoder_2
+from objmask.align.align_module import AlignModelTextEncoder_XL
 from huggingface_hub import login
 
 login("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")
+os.system("wandb login --relogin 138c38699b36fb0223ca0f94cde30c6d531895ca")
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.31.0.dev0")
 
@@ -732,7 +733,7 @@ def main(args):
             args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
         )
     # TODO: change tokenizer_one to align module
-    align_tokenizer_one = AlignModelTextEncoder_1(input_dim=196, output_dim=77,feature_dim=768)
+    align_tokenizer_one = AlignModelTextEncoder_XL(input_dim=196, output_dim=77,feature_dim=768)
     # align_tokenizer_two = AlignModelTextEncoder_2(input_dim=196, output_dim=77,feature_dim=768)
     
     # tokenizer_two = AutoTokenizer.from_pretrained(
@@ -777,13 +778,14 @@ def main(args):
     mae = CustomMae(mae_path=mae_path, device=mae_device)
     # Freeze vae, text encoders, and unet
     vae.requires_grad_(False)
-    unet.requires_grad_(False)
+    # unet.requires_grad_(False)
     # text_encoder_one.requires_grad_(False)
     # text_encoder_two.requires_grad_(False)
     # unet.requires_grad_(False)
     
     # train align model
     align_tokenizer_one.train()
+    unet.train()
 
     # For mixed precision training we cast all non-trainable weights to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1021,9 +1023,9 @@ def main(args):
         # fingerprint used by the cache for the other processes to load the result
         # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
         # new_fingerprint = Hasher.hash(args)
-        new_fingerprint_for_mae = Hasher.hash(mae_path)
-        new_fingerprint_for_vae = Hasher.hash(vae_path)
-        # TODO: update the new fingerprint
+        # new_fingerprint_for_mae = Hasher.hash(mae_path)
+        # new_fingerprint_for_vae = Hasher.hash(vae_path)
+        # # TODO: update the new fingerprint
         # new_fingerprint_for_mae = Hasher.update(mae_path)
         # new_fingerprint_for_vae = Hasher.update(vae_path)
         
@@ -1035,13 +1037,13 @@ def main(args):
             compute_mae_encodings_fn,
             batched=True,
             batch_size=args.train_batch_size,
-            new_fingerprint=new_fingerprint_for_mae,
+            # new_fingerprint=new_fingerprint_for_mae,
         )
         train_dataset_with_vae = train_dataset.map(
             compute_vae_encodings_fn,
             batched=True,
             batch_size=args.train_batch_size,
-            new_fingerprint=new_fingerprint_for_vae,
+            # new_fingerprint=new_fingerprint_for_vae,
         )
         precomputed_dataset = concatenate_datasets(
             # [train_dataset_with_mae, train_dataset_with_vae.remove_columns(["image", "text"])], axis=1
@@ -1231,9 +1233,9 @@ def main(args):
                 mae_embeds = batch["mae_embeds"].to(accelerator.device, dtype=weight_dtype)
                 # forward to align model
                 align_embeds_1, align_embeds_2 = align_tokenizer_one(mae_embeds)
-                align_embeds_1 = align_embeds_1.to(torch.long)
-                # align_embeds_2 = align_tokenizer_two(mae_embeds)
+                align_embeds_1 = align_embeds_1.to(weight_dtype)
                 align_embeds_2 = align_embeds_2.to(torch.long)
+                align_embeds_2 = align_embeds_2.to(weight_dtype)
                 # pooled_prompt_embeds = batch["pooled_prompt_embeds"].to(accelerator.device)
                 # unet_added_conditions.update({"text_embeds": pooled_prompt_embeds})
                 prompt_embeds_list = []
@@ -1243,35 +1245,20 @@ def main(args):
                 bs_embed, seq_len, _ = align_embeds_2.shape
                 prompt_embeds_2 = align_embeds_2.view(bs_embed, seq_len, -1)
                 prompt_embeds_list.append(prompt_embeds_2)
-                prompt_embeds = torch.concatenate(prompt_embeds_list, dim=-1)
-                # pooled_prompt_embeds = prompt_embeds_2
-                # pooled_prompt_embeds = pooled_prompt_embeds.view(bs_embed, -1)
-                # print(f"align_embeds_1: {align_embeds_1.shape}")
-                # print(align_embeds.shape)
-                # prompt_embeds_1 = text_encoder_one(
-                #     input_ids=align_embeds,
-                #     output_hidden_states=True,
-                #     return_dict=False
-                # )
-                # print(f"prompt_embeds device: {prompt_embeds.device}")
-                # print(f"pooled_prompt_embeds device: {pooled_prompt_embeds.device}")
-                # print(f"noisy_model_input device: {noisy_model_input.device}")
-                # NOTE: check the shape of all value
-                # pooled_prompt_embeds is a numpy array all zeros the shape is (1, sequence_length of prompt_embeds_2)
-                # pooled_prompt_embeds = np.zeros((1, prompt_embeds_2.shape[2]))
-                # create pooled_prompt_embeds torch zeros
-                pooled_prompt_embeds = torch.zeros((1, prompt_embeds_2.shape[2])).to(accelerator.device)
-                pooled_prompt_embeds.requires_grad = False
+                prompt_embeds = torch.concatenate(prompt_embeds_list, dim=-1).to(weight_dtype)
+                pooled_prompt_embeds = torch.zeros((bs_embed, prompt_embeds_2.shape[2])).to(accelerator.device)
+                pooled_prompt_embeds = pooled_prompt_embeds.to(weight_dtype)
+                pooled_prompt_embeds.requires_grad = True
                 unet_added_conditions.update({"text_embeds": pooled_prompt_embeds})
                 # convert to float32
                 
                 # convert add_time_ids to float32
                 
-                print(f"noisy_model_input: {noisy_model_input.shape}")
-                print(f"timesteps: {timesteps.shape}")
-                print(f"prompt_embeds: {prompt_embeds.shape}")
-                print(f"pooled_prompt_embeds: {pooled_prompt_embeds.shape}")
-                print(f"add_time_ids: {add_time_ids.shape}")
+                # print(f"noisy_model_input: {noisy_model_input.shape}")
+                # print(f"timesteps: {timesteps.shape}")
+                # print(f"prompt_embeds: {prompt_embeds.shape}")
+                # print(f"pooled_prompt_embeds: {pooled_prompt_embeds.shape}")
+                # print(f"add_time_ids: {add_time_ids.shape}")
                 '''
                 noisy_model_input: torch.Size([1, 4, 64, 64])
                 timesteps: torch.Size([1])
@@ -1320,11 +1307,11 @@ def main(args):
                 # print(f"pooled_prompt_embeds: {pooled_prompt_embeds.dtype}")
                 # print(f"add_time_ids: {add_time_ids.dtype}")
                 # NOTE: check the device of all value
-                print(f"noisy_model_input: {noisy_model_input.device}")
-                print(f"timesteps: {timesteps.device}")
-                print(f"prompt_embeds: {prompt_embeds.device}")
-                print(f"pooled_prompt_embeds: {pooled_prompt_embeds.device}")
-                print(f"add_time_ids: {add_time_ids.device}")
+                # print(f"noisy_model_input: {noisy_model_input.device}")
+                # print(f"timesteps: {timesteps.device}")
+                # print(f"prompt_embeds: {prompt_embeds.device}")
+                # print(f"pooled_prompt_embeds: {pooled_prompt_embeds.device}")
+                # print(f"add_time_ids: {add_time_ids.device}")
                 model_pred = unet(
                     noisy_model_input,
                     timesteps,
@@ -1351,8 +1338,6 @@ def main(args):
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 if args.snr_gamma is None:
-                    # convert model_pred to torch tensor
-                    model_pred = torch.tensor(model_pred).to(target.device)
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
                     # loss = F.mse_loss(model_pred, target.float(), reduction="mean")
                 else:
