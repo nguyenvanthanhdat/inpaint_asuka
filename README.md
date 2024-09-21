@@ -5,9 +5,14 @@
 First create conda env python 3.11
 
 ```bash
+# with conda
 conda create -n asuka python=3.11
 conda activate asuka
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+# with mamba
+mamba create -n asuka python=3.11
+mamba activate asuka
+mamba install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 ```
 
 ## Install dependencies
